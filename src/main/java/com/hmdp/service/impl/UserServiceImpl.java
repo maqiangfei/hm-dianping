@@ -1,6 +1,8 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -11,10 +13,16 @@ import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-import javax.servlet.http.HttpSession;
+import javax.annotation.Resource;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.*;
 import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 
 /**
@@ -29,8 +37,11 @@ import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     @Override
-    public Result sendCode(String phone, HttpSession session) {
+    public Result sendCode(String phone) {
         if (RegexUtils.isPhoneInvalid(phone)) {
             // 手机号格式错误
             return Result.fail("手机号格式错误！");
@@ -39,8 +50,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 生成验证码
         String code = RandomUtil.randomNumbers(6);
 
-        // 保存验证码到 Session
-        session.setAttribute("code", code);
+        // 保存验证码到 Redis
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
 
         // 发送验证码
         log.debug("发送验证码：{}", code);
@@ -50,7 +61,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     @Override
-    public Result login(LoginFormDTO loginForm, HttpSession session) {
+    public Result login(LoginFormDTO loginForm) {
         String phone = loginForm.getPhone();
         if (RegexUtils.isPhoneInvalid(phone)) {
             // 手机号格式错误
@@ -58,7 +69,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
 
         // 校验验证码
-        Object cacheCode = session.getAttribute("code");
+        Object cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
         String loginCode = loginForm.getCode();
         if (cacheCode == null || !cacheCode.equals(loginCode)) {
             // 验证码错误
@@ -73,10 +84,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             user = createUserWithPhone(phone);
         }
 
-        // 保存用户信息到 session
-        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+        // 生成token，作为登录令牌
+        String token = UUID.fastUUID().toString(true);
 
-        return Result.ok("1");
+        // 将User对象转为 Map<String, String>
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((field, value) -> value.toString()));
+
+        // 保存用户信息到 Redis
+        stringRedisTemplate.opsForHash().putAll(LOGIN_USER_KEY + token, userMap);
+
+        // 设置过期时间
+        stringRedisTemplate.expire(LOGIN_USER_KEY + token, LOGIN_USER_TTL, TimeUnit.DAYS);
+
+        return Result.ok(token);
     }
 
     private User createUserWithPhone(String phone) {
@@ -84,6 +108,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         User user = new User();
         user.setPhone(phone);
         user.setNickName(USER_NICK_NAME_PREFIX + RandomUtil.randomString(10));
+
         // 保存用户
         save(user);
         return user;
