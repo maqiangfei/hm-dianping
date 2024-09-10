@@ -13,8 +13,7 @@ import javax.annotation.Resource;
 
 import java.util.concurrent.TimeUnit;
 
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
-import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TTL;
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -31,7 +30,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private StringRedisTemplate stringRedisTemplate;
 
     /**
-     * 实现商铺缓存
+     * 实现商铺缓存，缓存空对象 解决 缓存穿透（大量缓存和数据库中都没有的请求，导致数据库压力太大）
      * @param id 商铺id
      * @return 商铺对象
      */
@@ -47,11 +46,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             return JSONUtil.toBean(json, Shop.class);
         }
 
+        if (json != null) {
+            // 命中空对象
+            return null;
+        }
+
         // 缓存没命中，查询数据库
         Shop shop = lambdaQuery().eq(Shop::getId, id).one();
 
         if (shop == null) {
-            // 数据库中没有该店铺
+            // 数据库中没有该店铺，缓存空对象
+            stringRedisTemplate.opsForValue().set(shopKey, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
             return null;
         }
 
@@ -59,7 +64,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         String shopJson = JSONUtil.toJsonStr(shop);
         stringRedisTemplate.opsForValue().set(shopKey, shopJson, CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
-        // 返回shop
+        // 返回Shop
         return shop;
     }
 }
