@@ -30,7 +30,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private StringRedisTemplate stringRedisTemplate;
 
     /**
-     * 实现商铺缓存，缓存空对象 解决 缓存穿透（大量缓存和数据库中都没有的请求，导致数据库压力太大）
+     * 实现商铺缓存，互斥锁 解决 缓存击穿（高并发且重建时间长的缓存失效，导致大量的请求打到数据库）
      * @param id 商铺id
      * @return 商铺对象
      */
@@ -42,7 +42,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         String json = stringRedisTemplate.opsForValue().get(shopKey);
 
         if (StrUtil.isNotBlank(json)) {
-            // 缓存命中
+            // 缓存命中，刷新缓存有效期并返回
+            stringRedisTemplate.expire(shopKey, CACHE_SHOP_TTL, TimeUnit.MINUTES);
             return JSONUtil.toBean(json, Shop.class);
         }
 
@@ -51,20 +52,58 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             return null;
         }
 
-        // 缓存没命中，查询数据库
-        Shop shop = lambdaQuery().eq(Shop::getId, id).one();
+        Shop shop = null;
+        try {
+            // 尝试获取锁
+            boolean isLock = tryLock(LOCK_SHOP_KEY + id);
+            if (!isLock) {
+                // 获取锁失败，等待后再次尝试
+                Thread.sleep(50);
+                return queryById(id);
+            }
 
-        if (shop == null) {
-            // 数据库中没有该店铺，缓存空对象
-            stringRedisTemplate.opsForValue().set(shopKey, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
-            return null;
+            // 获取锁成功，查询数据库
+            shop = lambdaQuery().eq(Shop::getId, id).one();
+
+            Thread.sleep(200); // 模拟重构缓存延时
+
+            if (shop == null) {
+                // 数据库中没有该店铺，缓存空对象
+                stringRedisTemplate.opsForValue().set(shopKey, "", CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+
+            // 将店铺添加进缓存
+            String shopJson = JSONUtil.toJsonStr(shop);
+            stringRedisTemplate.opsForValue().set(shopKey, shopJson, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            unlock(LOCK_SHOP_KEY + id);
         }
-
-        // 将店铺添加进缓存
-        String shopJson = JSONUtil.toJsonStr(shop);
-        stringRedisTemplate.opsForValue().set(shopKey, shopJson, CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
         // 返回Shop
         return shop;
+    }
+
+    /**
+     * 使用 setnx 命令尝试获取锁
+     * @param lock 锁标识
+     * @return 是否获取锁
+     */
+    private boolean tryLock(String lock) {
+        // 使用 setnx 命令尝试获取锁
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(lock, "", LOCK_SHOP_TTL, TimeUnit.SECONDS);
+        // 直接返回Boolean需要拆箱，有空指针的风险
+        return Boolean.TRUE.equals(flag);
+    }
+
+    /**
+     * 释放锁
+     * @param lock 锁标识
+     */
+    private void unlock(String lock) {
+        stringRedisTemplate.delete(lock);
     }
 }
