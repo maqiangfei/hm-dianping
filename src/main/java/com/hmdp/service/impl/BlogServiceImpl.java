@@ -1,8 +1,10 @@
 package com.hmdp.service.impl;
 
-import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
@@ -15,7 +17,10 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_KEY;
 
@@ -87,14 +92,14 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         Long userId = UserHolder.getUser().getId();
         String key = BLOG_LIKED_KEY + id;
         // 判断用户是否点赞
-        Boolean isLike = stringRedisTemplate.opsForSet().isMember(key, userId.toString());
-        if (BooleanUtil.isFalse(isLike)) {
+        Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
+        if (score == null) {
             // 用户没点赞，点赞数+1
             boolean isSuccess = lambdaUpdate().setSql("liked = liked + 1")
                     .eq(Blog::getId, id).update();
             if (isSuccess) {
-                // 将用户添加进缓存的bolg点赞set集合
-                stringRedisTemplate.opsForSet().add(key, userId.toString());
+                // 将用户添加进缓存的bolg点赞set集合 zadd key value score
+                stringRedisTemplate.opsForZSet().add(key, userId.toString(), System.currentTimeMillis());
             }
         } else {
             // 用户点赞了，点赞数-1
@@ -102,10 +107,31 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
                     .eq(Blog::getId, id).update();
             // 将用户从缓存的bolg点赞set集合移除
             if (isSuccess) {
-                stringRedisTemplate.opsForSet().remove(key, userId.toString());
+                stringRedisTemplate.opsForZSet().remove(key, userId.toString());
             }
         }
         return Result.ok();
+    }
+
+    @Override
+    public Result queryBlogLikes(Long id) {
+        // 查询top5点赞用户 zrange key 0 4
+        Set<String> userIds = stringRedisTemplate.opsForZSet().range(BLOG_LIKED_KEY + id, 0, 4);
+        if (userIds == null || userIds.isEmpty()) {
+            // 没有点赞
+            return Result.ok(Collections.emptyList());
+        }
+        // 解析出其中的用户id
+        List<Long> ids = userIds.stream().map(Long::valueOf).collect(Collectors.toList());
+        String idStr = StrUtil.join(",", ids);
+        // 根据用户id查询用户 注意：in()不会根据里面的顺序返回，where id in (5, 1) order by FIELD(id, 5, 1)
+        List<UserDTO> users = userService.lambdaQuery()
+                .in(User::getId, ids).last("order by field(id, " + idStr + ")").list()
+                .stream()
+                .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
+                .collect(Collectors.toList());
+        // 返回
+        return Result.ok(users);
     }
 
     /**
@@ -127,9 +153,14 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
      */
     private void isBlogLiked(Blog blog) {
         // 获取登录用户
-        Long userId = UserHolder.getUser().getId();
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            // 用户未登录
+            return;
+        }
+        Long userId = user.getId();
         // 判断用户是否点赞
-        Boolean isLike = stringRedisTemplate.opsForSet().isMember(BLOG_LIKED_KEY + blog.getId(), userId.toString());
-        blog.setIsLike(BooleanUtil.isTrue(isLike));
+        Double score = stringRedisTemplate.opsForZSet().score(BLOG_LIKED_KEY + blog.getId(), userId.toString());
+        blog.setIsLike(score != null);
     }
 }
