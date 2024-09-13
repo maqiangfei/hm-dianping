@@ -61,6 +61,11 @@ public class BlogController {
         return Result.ok(records);
     }
 
+    @GetMapping("/of/user")
+    public Result queryBlogByUserId(Long id, @RequestParam(value = "current", defaultValue = "1") Integer current) {
+        return blogService.queryBlogByUserId(id, current);
+    }
+
     @GetMapping("/hot")
     public Result queryHotBlog(@RequestParam(value = "current", defaultValue = "1") Integer current) {
         return blogService.queryHotBlog(current);

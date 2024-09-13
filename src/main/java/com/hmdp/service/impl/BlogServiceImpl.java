@@ -134,6 +134,16 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok(users);
     }
 
+    @Override
+    public Result queryBlogByUserId(Long id, Integer current) {
+        // 查询
+        Page<Blog> page = lambdaQuery().eq(Blog::getUserId, id)
+                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        // 获取当前页数据
+        List<Blog> records = page.getRecords();
+        return Result.ok(records);
+    }
+
     /**
      * 给博客设置作者信息
      * @param blog 博客
