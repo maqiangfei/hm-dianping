@@ -12,14 +12,19 @@ import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -121,6 +126,62 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         String token = request.getHeader("authorization");
         stringRedisTemplate.delete(LOGIN_USER_KEY + token);
         return Result.ok();
+    }
+
+    /**
+     * 签到功能
+     * @return 结果
+     */
+    @Override
+    public Result sign() {
+        // 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+        // 获取日期
+        LocalDateTime now = LocalDateTime.now();
+        // 拼接key
+        String keySuffix = now.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String key = USER_SIGN_KEY + userId + ":" + keySuffix;
+        // 获取今天是本月第几天
+        int dayOfMonth = now.getDayOfMonth();
+        // 写入Redis setbit key offset 1
+        stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
+        return Result.ok();
+    }
+
+    /**
+     * 计算连续签到天数
+     * @return 连续签到的天数
+     */
+    @Override
+    public Result signCount() {
+        // 获取key
+        Long userId = UserHolder.getUser().getId();
+        LocalDateTime now = LocalDateTime.now();
+        String keySuffix = now.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String key = USER_SIGN_KEY + userId + ":" + keySuffix;
+        // 获取今天是本月第几天
+        int dayOfMonth = now.getDayOfMonth();
+        List<Long> result = stringRedisTemplate.opsForValue().bitField( // bitfield key get udayofMonth 0
+                key, BitFieldSubCommands.create()
+                        .get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth)).valueAt(0)
+        );
+        if (result == null || result.isEmpty()) {
+            // 没有签到记录
+            return Result.ok(0);
+        }
+        Long num = result.get(0);
+        if (num == null || num == 0) {
+            return Result.ok(0);
+        }
+        // 循环遍历，与1做与运算，计数
+        int count = 0;
+        while ((num & 1) != 0) { // 等于0则，第一个没签到，结束
+            // 签到一次，计数器+1
+            count++;
+            // 无符号右移一位，抛弃最后一位，看下一位是否为1
+            num >>>= 1;
+        }
+        return Result.ok(count);
     }
 
     private User createUserWithPhone(String phone) {
