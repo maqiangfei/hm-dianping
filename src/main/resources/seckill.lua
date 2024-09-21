@@ -7,7 +7,7 @@ local userId = ARGV[1]
 -- 秒杀券id
 local voucherId = ARGV[2]
 -- 订单id
-local orderId = ARGV[3]
+--local orderId = ARGV[3]
 
 -- 用户集合key
 local usersKey = "seckill:order:" .. voucherId
@@ -29,6 +29,6 @@ redis.call("incrby", stockKey, -1)
 -- 保存用户
 redis.call("sadd", usersKey, userId)
 -- 将订单信息发送进消息队列，xadd stream.orders * k1 v1 k2 v2 ...
-redis.call('xadd', 'stream.orders', '*', 'userId', userId, 'voucherId', voucherId, 'id', orderId)
+--redis.call('xadd', 'stream.orders', '*', 'userId', userId, 'voucherId', voucherId, 'id', orderId)
 
 return 0
